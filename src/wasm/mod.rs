@@ -244,6 +244,33 @@ impl PairedBitBox {
         Ok(self.device.change_password().await?)
     }
 
+    /// Sets the password on an uninitialized device. `seedLen` must be 16 (12 recovery words,
+    /// requires firmware >=9.6.0) or 32 (24 recovery words). Call `createBackup()` (or
+    /// `restoreFromMnemonic()`) afterwards to finish initialization.
+    #[wasm_bindgen(js_name = setPassword)]
+    pub async fn set_password(&self, seed_len: u32) -> Result<(), JavascriptError> {
+        Ok(self.device.set_password(seed_len).await?)
+    }
+
+    /// Sets a human-readable device label, shown on-device and in the BitBoxApp. Max 64 bytes.
+    #[wasm_bindgen(js_name = setDeviceName)]
+    pub async fn set_device_name(&self, name: &str) -> Result<(), JavascriptError> {
+        Ok(self.device.set_device_name(name).await?)
+    }
+
+    /// Prompts the user to insert the SD card on the device, needed before `createBackup()`.
+    #[wasm_bindgen(js_name = insertSdcard)]
+    pub async fn insert_sdcard(&self) -> Result<(), JavascriptError> {
+        Ok(self.device.insert_sdcard().await?)
+    }
+
+    /// Finishes device setup after `setPassword()` by writing the on-device backup to the SD
+    /// card. Requires the SD card to already be inserted (see `insertSdcard()`).
+    #[wasm_bindgen(js_name = createBackup)]
+    pub async fn create_backup(&self) -> Result<(), JavascriptError> {
+        Ok(self.device.create_backup().await?)
+    }
+
     /// Retrieves an xpub. For non-standard keypaths, a warning is displayed on the BitBox even if
     /// `display` is false.
     #[wasm_bindgen(js_name = btcXpub)]

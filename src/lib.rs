@@ -452,6 +452,80 @@ impl<R: Runtime> PairedBitBox<R> {
         }
     }
 
+    /// Sets the password on an uninitialized device. This is the first step of device setup:
+    /// `create_backup()` (or `restore_from_mnemonic()`) must follow to finish initialization.
+    /// `seed_len` must be 16 (12 recovery words, requires firmware >=9.6.0) or 32 (24 recovery
+    /// words).
+    pub async fn set_password(&self, seed_len: u32) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        if seed_len != 16 && seed_len != 32 {
+            return Err(BitBoxError::InvalidInput.into());
+        }
+        if seed_len == 16 {
+            self.validate_version(">=9.6.0")?;
+        }
+        let mut entropy = vec![0u8; seed_len as usize];
+        getrandom::getrandom(&mut entropy).or(Err(Error::Unknown))?;
+        match self
+            .query_proto(Request::SetPassword(pb::SetPasswordRequest { entropy }))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Sets a human-readable device label, shown on-device and in the BitBoxApp. Max 64 bytes.
+    pub async fn set_device_name(&self, name: &str) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        if name.is_empty() || name.len() > 64 {
+            return Err(BitBoxError::InvalidInput.into());
+        }
+        match self
+            .query_proto(Request::DeviceName(pb::SetDeviceNameRequest {
+                name: name.into(),
+            }))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Prompts the user to insert the SD card on the device, needed before `create_backup()`.
+    pub async fn insert_sdcard(&self) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        match self
+            .query_proto(Request::InsertRemoveSdcard(
+                pb::InsertRemoveSdCardRequest {
+                    action: pb::insert_remove_sd_card_request::SdCardAction::InsertCard as i32,
+                },
+            ))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Finishes device setup after `set_password()` by writing the on-device backup to the SD
+    /// card. Requires the SD card to already be inserted (see `insert_sdcard()`).
+    pub async fn create_backup(&self) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        let now = std::time::SystemTime::now();
+        let duration_since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+        match self
+            .query_proto(Request::CreateBackup(pb::CreateBackupRequest {
+                timestamp: duration_since_epoch.as_secs() as u32,
+                timezone_offset: chrono::Local::now().offset().local_minus_utc(),
+            }))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
     /// Invokes the BIP85-BIP39 workflow on the device, letting the user select the number of words
     /// (12, 28, 24) and an index and display a derived BIP-39 mnemonic.
     pub async fn bip85_app_bip39(&self) -> Result<(), Error> {
