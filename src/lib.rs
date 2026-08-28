@@ -282,6 +282,36 @@ impl<R: Runtime> PairingBitBox<R> {
     }
 }
 
+/// Current Unix timestamp and local timezone offset (seconds east of UTC), as the device-setup
+/// protobuf messages want them.
+///
+/// `std::time::SystemTime::now()` has no implementation on `wasm32-unknown-unknown` and panics at
+/// runtime there (unlike `wasm32-wasi`, which this crate does not target); `chrono`'s `clock`
+/// feature falls back to it unless the separate `wasmbind` feature is also on, which this crate
+/// does not enable. So the wasm build reads the time through `js_sys::Date` instead, which is the
+/// only reason this function exists rather than calling `SystemTime::now()` inline.
+#[cfg(feature = "wasm")]
+fn now_and_tz_offset() -> (u32, i32) {
+    let now = js_sys::Date::new_0();
+    // `getTimezoneOffset()` returns minutes *west* of UTC, the opposite sign convention from the
+    // protobuf field (and from `chrono`'s `local_minus_utc()`), and JS minutes need converting to
+    // the seconds the field expects.
+    (
+        (now.get_time() / 1000.0) as u32,
+        -(now.get_timezone_offset() as i32) * 60,
+    )
+}
+
+#[cfg(not(feature = "wasm"))]
+fn now_and_tz_offset() -> (u32, i32) {
+    let now = std::time::SystemTime::now();
+    let duration_since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+    (
+        duration_since_epoch.as_secs() as u32,
+        chrono::Local::now().offset().local_minus_utc(),
+    )
+}
+
 /// Paired BitBox. This is where you can invoke most API functions like getting xpubs, displaying
 /// receive addresses, etc.
 pub struct PairedBitBox<R: Runtime> {
@@ -445,6 +475,79 @@ impl<R: Runtime> PairedBitBox<R> {
         self.validate_version(">=9.25.0")?;
         match self
             .query_proto(Request::ChangePassword(pb::ChangePasswordRequest {}))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Sets the password on an uninitialized device. This is the first step of device setup:
+    /// `create_backup()` (or `restore_from_mnemonic()`) must follow to finish initialization.
+    /// `seed_len` must be 16 (12 recovery words, requires firmware >=9.6.0) or 32 (24 recovery
+    /// words).
+    pub async fn set_password(&self, seed_len: u32) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        if seed_len != 16 && seed_len != 32 {
+            return Err(BitBoxError::InvalidInput.into());
+        }
+        if seed_len == 16 {
+            self.validate_version(">=9.6.0")?;
+        }
+        let mut entropy = vec![0u8; seed_len as usize];
+        getrandom::getrandom(&mut entropy).or(Err(Error::Unknown))?;
+        match self
+            .query_proto(Request::SetPassword(pb::SetPasswordRequest { entropy }))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Sets a human-readable device label, shown on-device and in the BitBoxApp. Max 64 bytes.
+    pub async fn set_device_name(&self, name: &str) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        if name.is_empty() || name.len() > 64 {
+            return Err(BitBoxError::InvalidInput.into());
+        }
+        match self
+            .query_proto(Request::DeviceName(pb::SetDeviceNameRequest {
+                name: name.into(),
+            }))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Prompts the user to insert the SD card on the device, needed before `create_backup()`.
+    pub async fn insert_sdcard(&self) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        match self
+            .query_proto(Request::InsertRemoveSdcard(
+                pb::InsertRemoveSdCardRequest {
+                    action: pb::insert_remove_sd_card_request::SdCardAction::InsertCard as i32,
+                },
+            ))
+            .await?
+        {
+            Response::Success(_) => Ok(()),
+            _ => Err(Error::UnexpectedResponse),
+        }
+    }
+
+    /// Finishes device setup after `set_password()` by writing the on-device backup to the SD
+    /// card. Requires the SD card to already be inserted (see `insert_sdcard()`).
+    pub async fn create_backup(&self) -> Result<(), Error> {
+        let _api_call = self.begin_api_call().await;
+        let (timestamp, timezone_offset) = now_and_tz_offset();
+        match self
+            .query_proto(Request::CreateBackup(pb::CreateBackupRequest {
+                timestamp,
+                timezone_offset,
+            }))
             .await?
         {
             Response::Success(_) => Ok(()),
