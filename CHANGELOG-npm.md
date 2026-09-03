@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+- add `bitbox02ConnectAnyWebHID()` returning a `Connection` that tells firmware mode from bootloader
+  mode by HID product string; `Connection.intoBitBox()` / `Connection.intoBootloader()`
+- add `Bootloader` (`versions()`, `hardware()`, `hashes()`, `erased()`, `signedFirmwareVersion()`,
+  `flashSignedFirmware()`, `reboot()`) to install a signed firmware release on a device without firmware
+- add `BitBox.performAttestation()`: genuine-device check against the vendor's root attestation keys,
+  before unlock and pairing
+- `bitbox02ConnectWebHID()` now fails with code `bootloader-mode` instead of stalling when the
+  selected device is a bootloader
 
 ## 0.13.0
 - eth: add support for streaming transactions and EIP-712 typed data with large data

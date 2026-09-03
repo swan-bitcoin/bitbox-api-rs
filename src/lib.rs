@@ -5,6 +5,8 @@
 #[cfg(all(feature = "wasm", feature = "multithreaded"))]
 compile_error!("wasm and multithreaded can't both be active");
 
+pub mod attestation;
+pub mod bootloader;
 pub mod btc;
 pub mod cardano;
 pub mod error;
@@ -58,7 +60,7 @@ const OP_I_CAN_HAS_HANDSHAEK: u8 = b'h';
 const OP_HER_COMEZ_TEH_HANDSHAEK: u8 = b'H';
 const OP_I_CAN_HAS_PAIRIN_VERIFICASHUN: u8 = b'v';
 const OP_NOISE_MSG: u8 = b'n';
-const _OP_ATTESTATION: u8 = b'a';
+const OP_ATTESTATION: u8 = b'a';
 const OP_UNLOCK: u8 = b'u';
 
 const RESPONSE_SUCCESS: u8 = 0x00;
@@ -130,6 +132,37 @@ impl<R: Runtime> BitBox<R> {
             noise_config,
         )
         .await
+    }
+
+    /// Checks that the device is a genuine BitBox02: sends a random challenge over the raw
+    /// channel and verifies the answer against the vendor's root attestation keys (see the
+    /// `attestation` module). Works before unlock and pairing and needs no interaction on the
+    /// device, which is why it lives here and not on `PairedBitBox`.
+    ///
+    /// A verification failure is a result, not an error: `Ok(result)` with
+    /// `result.verified() == false`. `Err` is reserved for the transport failing.
+    pub async fn perform_attestation(&self) -> Result<attestation::AttestationResult, Error> {
+        let mut challenge = [0u8; 32];
+        getrandom::getrandom(&mut challenge).or(Err(Error::Unknown))?;
+        let mut msg = vec![OP_ATTESTATION];
+        msg.extend_from_slice(&challenge);
+        let response = self.communication.query(&msg).await?;
+        let attestation = match response.split_first() {
+            Some((&RESPONSE_SUCCESS, payload)) => attestation::Attestation::parse(payload),
+            _ => Err(attestation::Error::DeviceRefused),
+        };
+        Ok(match attestation {
+            Ok(attestation) => attestation::AttestationResult {
+                challenge,
+                verification: attestation.verify(&challenge),
+                attestation: Some(attestation),
+            },
+            Err(err) => attestation::AttestationResult {
+                challenge,
+                attestation: None,
+                verification: Err(err),
+            },
+        })
     }
 
     /// Invokes the device unlock and pairing.
@@ -526,11 +559,9 @@ impl<R: Runtime> PairedBitBox<R> {
     pub async fn insert_sdcard(&self) -> Result<(), Error> {
         let _api_call = self.begin_api_call().await;
         match self
-            .query_proto(Request::InsertRemoveSdcard(
-                pb::InsertRemoveSdCardRequest {
-                    action: pb::insert_remove_sd_card_request::SdCardAction::InsertCard as i32,
-                },
-            ))
+            .query_proto(Request::InsertRemoveSdcard(pb::InsertRemoveSdCardRequest {
+                action: pb::insert_remove_sd_card_request::SdCardAction::InsertCard as i32,
+            }))
             .await?
         {
             Response::Success(_) => Ok(()),

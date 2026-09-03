@@ -47,8 +47,10 @@ export async function getWebHIDDevice(vendorId, productId, onCloseCb) {
       devices = await navigator.hid.requestDevice({filters: [{vendorId, productId}]});
     }
     const d = devices[0];
-    // Filter out other products that might be in the list presented by the Browser.
-    if (d.productName.includes('BitBox02')) {
+    // Filter out other products that might be in the list presented by the Browser. Firmware-mode
+    // devices are named "BitBox02…"; the bootloaders of the original BitBox02 are "bb02-bootloader"
+    // and "bb02btc-bootloader" (the Nova bootloaders keep the "BitBox02" prefix).
+    if (d.productName.includes('BitBox02') || d.productName.includes('bb02')) {
       device = d;
     }
   } catch (err) {
@@ -102,6 +104,8 @@ export async function getWebHIDDevice(vendorId, productId, onCloseCb) {
       });
     },
     valid: () => device.opened,
+    // The HID product string, which is how firmware mode and bootloader mode are told apart.
+    productName: device.productName,
   };
 }
 

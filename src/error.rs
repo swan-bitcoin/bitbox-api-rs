@@ -78,6 +78,12 @@ pub enum Error {
     #[error("bitbox error: {0}")]
     #[cfg_attr(feature = "wasm", assoc(js_code = String::from("bitbox-") + _0.js_code()))]
     BitBox(#[from] BitBoxError),
+    #[error("bootloader error: {0}")]
+    #[cfg_attr(feature = "wasm", assoc(js_code = "bootloader".into()))]
+    Bootloader(#[from] crate::bootloader::Error),
+    #[error("attestation error: {0}")]
+    #[cfg_attr(feature = "wasm", assoc(js_code = "attestation".into()))]
+    Attestation(#[from] crate::attestation::Error),
     #[error("failed parsing keypath: {0}")]
     #[cfg_attr(feature = "wasm", assoc(js_code = "keypath-parse".into()))]
     KeypathParse(String),
