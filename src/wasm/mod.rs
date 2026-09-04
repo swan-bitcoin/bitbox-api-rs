@@ -323,6 +323,14 @@ impl BitBox {
         Ok(serde_wasm_bindgen::to_value(&js).unwrap().into())
     }
 
+    /// Closes the connection without unlocking or pairing. Use it to release a device that failed
+    /// `performAttestation()`: leaving it open blocks the next `open()` on the same WebHID device
+    /// until the page is reloaded. Also invokes the `on_close_cb` callback given at connect time.
+    #[wasm_bindgen(js_name = close)]
+    pub fn close(self) {
+        self.close_function.call0(&JsValue::NULL).unwrap();
+    }
+
     /// Invokes the device unlock and pairing. After this, stop using this instance and continue
     /// with the returned instance of type `PairingBitBox`.
     #[wasm_bindgen(js_name = unlockAndPair)]

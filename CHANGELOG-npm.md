@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+- add `BitBox.close()` so a device that fails `performAttestation()` can be released before
+  unlock and pairing
 - add `bitbox02ConnectAnyWebHID()` returning a `Connection` that tells firmware mode from bootloader
   mode by HID product string; `Connection.intoBitBox()` / `Connection.intoBootloader()`
 - add `Bootloader` (`versions()`, `hardware()`, `hashes()`, `erased()`, `signedFirmwareVersion()`,
