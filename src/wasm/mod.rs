@@ -37,6 +37,12 @@ pub enum JavascriptError {
     #[error("connection aborted by user")]
     #[assoc(js_code="user-abort".into())]
     UserAbort,
+    #[error("the device is running its bootloader, not firmware; it has no firmware installed or was rebooted into the bootloader")]
+    #[assoc(js_code = "bootloader-mode".into())]
+    BootloaderMode,
+    #[error("the device is running firmware, not its bootloader")]
+    #[assoc(js_code = "not-bootloader".into())]
+    NotBootloader,
     #[error("{0}")]
     #[cfg_attr(feature = "wasm", assoc(js_code = _0.js_code()))]
     BitBox(#[from] crate::error::Error),
@@ -52,6 +58,12 @@ pub enum JavascriptError {
     #[error("Chain ID too large and would overflow in the computation of the `v` signature value: {chain_id}")]
     #[assoc(js_code = "chain-id-too-large".into())]
     ChainIDTooLarge { chain_id: u64 },
+}
+
+impl From<crate::bootloader::Error> for JavascriptError {
+    fn from(err: crate::bootloader::Error) -> Self {
+        JavascriptError::BitBox(err.into())
+    }
 }
 
 impl From<JavascriptError> for JsValue {
@@ -144,8 +156,181 @@ pub struct PairedBitBox {
     close_function: js_sys::Function,
 }
 
+/// A BitBox02 running its bootloader. Instantiate it through `bitbox02ConnectAnyWebHID()` and
+/// `Connection.intoBootloader()`. The only thing to do with it is to install a signed firmware
+/// release with `flashSignedFirmware()` and `reboot()`.
+#[wasm_bindgen]
+pub struct Bootloader {
+    device: crate::bootloader::Bootloader,
+    close_function: js_sys::Function,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttestationResultJs {
+    verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bootloader_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_pubkey_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootloaderVersionsJs {
+    firmware_version: u32,
+    signing_pubkeys_version: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BootloaderHashesJs {
+    firmware_hash: String,
+    signing_keydata_hash: String,
+}
+
+fn product_to_js(product: crate::Product) -> types::TsProduct {
+    match product {
+        crate::Product::Unknown => JsValue::from_str("unknown").into(),
+        crate::Product::BitBox02Multi => JsValue::from_str("bitbox02-multi").into(),
+        crate::Product::BitBox02BtcOnly => JsValue::from_str("bitbox02-btconly").into(),
+        crate::Product::BitBox02NovaMulti => JsValue::from_str("bitbox02-nova-multi").into(),
+        crate::Product::BitBox02NovaBtcOnly => JsValue::from_str("bitbox02-nova-btconly").into(),
+    }
+}
+
+#[wasm_bindgen]
+impl Bootloader {
+    /// Closes the connection. This also invokes the `on_close_cb` callback which was provided to
+    /// the connect method creating the connection.
+    #[wasm_bindgen(js_name = close)]
+    pub fn close(self) {
+        self.close_function.call0(&JsValue::NULL).unwrap();
+    }
+
+    /// Which product this bootloader belongs to, named like the firmware product.
+    #[wasm_bindgen(js_name = product)]
+    pub fn product(&self) -> types::TsProduct {
+        product_to_js(self.device.product().firmware_product())
+    }
+
+    /// The two monotonic version counters the bootloader keeps for downgrade protection.
+    #[wasm_bindgen(js_name = versions)]
+    pub async fn versions(&self) -> Result<types::TsBootloaderVersions, JavascriptError> {
+        let (firmware_version, signing_pubkeys_version) = self.device.versions().await?;
+        Ok(serde_wasm_bindgen::to_value(&BootloaderVersionsJs {
+            firmware_version,
+            signing_pubkeys_version,
+        })
+        .unwrap()
+        .into())
+    }
+
+    /// Which secure chip the device carries.
+    #[wasm_bindgen(js_name = hardware)]
+    pub async fn hardware(&self) -> Result<types::TsSecureChipModel, JavascriptError> {
+        Ok(match self.device.hardware().await? {
+            crate::bootloader::SecureChipModel::Atecc => JsValue::from_str("ATECC").into(),
+            crate::bootloader::SecureChipModel::Optiga => JsValue::from_str("Optiga").into(),
+        })
+    }
+
+    /// Hex-encoded firmware hash and signing-keydata hash, optionally shown on the device screen.
+    #[wasm_bindgen(js_name = hashes)]
+    pub async fn hashes(
+        &self,
+        display_firmware_hash: bool,
+        display_signing_keydata_hash: bool,
+    ) -> Result<types::TsBootloaderHashes, JavascriptError> {
+        let (firmware_hash, signing_keydata_hash) = self
+            .device
+            .hashes(display_firmware_hash, display_signing_keydata_hash)
+            .await?;
+        Ok(serde_wasm_bindgen::to_value(&BootloaderHashesJs {
+            firmware_hash: hex::encode(firmware_hash),
+            signing_keydata_hash: hex::encode(signing_keydata_hash),
+        })
+        .unwrap()
+        .into())
+    }
+
+    /// True if the device holds no firmware.
+    #[wasm_bindgen(js_name = erased)]
+    pub async fn erased(&self) -> Result<bool, JavascriptError> {
+        Ok(self.device.erased().await?)
+    }
+
+    /// Reads the monotonic firmware version out of a signed release file without flashing it.
+    /// Fails with code `bootloader` if the file is not a signed container.
+    #[wasm_bindgen(js_name = signedFirmwareVersion)]
+    pub fn signed_firmware_version(&self, signed_firmware: &[u8]) -> Result<u32, JavascriptError> {
+        Ok(crate::bootloader::SignedFirmware::parse(signed_firmware)?.version())
+    }
+
+    /// Installs a signed firmware release file (`*.signed.bin` as published by the vendor):
+    /// erase, write, write signatures. `progress`, if given, is called with a number from 0 to 1
+    /// after each chunk. Refuses a file for another edition before touching the device. Call
+    /// `reboot()` afterwards.
+    #[wasm_bindgen(js_name = flashSignedFirmware)]
+    pub async fn flash_signed_firmware(
+        &self,
+        signed_firmware: &[u8],
+        progress: Option<js_sys::Function>,
+    ) -> Result<(), JavascriptError> {
+        let mut report = |value: f64| {
+            if let Some(progress) = &progress {
+                let _ = progress.call1(&JsValue::NULL, &JsValue::from_f64(value));
+            }
+        };
+        Ok(self
+            .device
+            .flash_signed_firmware(signed_firmware, &mut report)
+            .await?)
+    }
+
+    /// Reboots the device into the firmware it holds. The device does not answer; the connection
+    /// is dead afterwards and the device re-enumerates as a firmware-mode BitBox02, so drop this
+    /// instance and connect again.
+    #[wasm_bindgen(js_name = reboot)]
+    pub fn reboot(&self) -> Result<(), JavascriptError> {
+        Ok(self.device.reboot()?)
+    }
+}
+
 #[wasm_bindgen]
 impl BitBox {
+    /// Checks that the device is a genuine BitBox02 by sending a random challenge and verifying
+    /// the answer against the vendor's root attestation keys. Runs before unlock and pairing and
+    /// needs nothing from the user. A failed check is reported in the result (`verified: false`
+    /// with a `failure` reason), not thrown; only a transport failure throws.
+    #[wasm_bindgen(js_name = performAttestation)]
+    pub async fn perform_attestation(&self) -> Result<types::TsAttestationResult, JavascriptError> {
+        let result = self.device.perform_attestation().await?;
+        let js = AttestationResultJs {
+            verified: result.verified(),
+            bootloader_hash: result
+                .attestation
+                .as_ref()
+                .map(|a| hex::encode(a.bootloader_hash)),
+            root_pubkey_identifier: result
+                .attestation
+                .as_ref()
+                .map(|a| hex::encode(a.root_pubkey_identifier)),
+            failure: result.verification.err().map(|e| e.to_string()),
+        };
+        Ok(serde_wasm_bindgen::to_value(&js).unwrap().into())
+    }
+
+    /// Closes the connection without unlocking or pairing. Use it to release a device that failed
+    /// `performAttestation()`: leaving it open blocks the next `open()` on the same WebHID device
+    /// until the page is reloaded. Also invokes the `on_close_cb` callback given at connect time.
+    #[wasm_bindgen(js_name = close)]
+    pub fn close(self) {
+        self.close_function.call0(&JsValue::NULL).unwrap();
+    }
+
     /// Invokes the device unlock and pairing. After this, stop using this instance and continue
     /// with the returned instance of type `PairingBitBox`.
     #[wasm_bindgen(js_name = unlockAndPair)]
@@ -209,15 +394,7 @@ impl PairedBitBox {
     /// Returns which product we are connected to.
     #[wasm_bindgen(js_name = product)]
     pub fn product(&self) -> types::TsProduct {
-        match self.device.product() {
-            crate::Product::Unknown => JsValue::from_str("unknown").into(),
-            crate::Product::BitBox02Multi => JsValue::from_str("bitbox02-multi").into(),
-            crate::Product::BitBox02BtcOnly => JsValue::from_str("bitbox02-btconly").into(),
-            crate::Product::BitBox02NovaMulti => JsValue::from_str("bitbox02-nova-multi").into(),
-            crate::Product::BitBox02NovaBtcOnly => {
-                JsValue::from_str("bitbox02-nova-btconly").into()
-            }
-        }
+        product_to_js(self.device.product())
     }
 
     /// Returns the firmware version, e.g. "9.18.0".

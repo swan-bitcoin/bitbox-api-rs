@@ -28,6 +28,19 @@ type DeviceInfo = {
   securechipModel: string;
   monotonicIncrementsRemaining: number;
 };
+type AttestationResult = {
+  // True if the device proved it was provisioned by the vendor.
+  verified: boolean;
+  // Hex SHA-256 of the device's bootloader, when the device answered.
+  bootloaderHash?: string;
+  // Hex identifier of the vendor root key that signed the device certificate, when the device answered.
+  rootPubkeyIdentifier?: string;
+  // Why verification failed, when it did.
+  failure?: string;
+};
+type BootloaderVersions = { firmwareVersion: number; signingPubkeysVersion: number };
+type BootloaderHashes = { firmwareHash: string; signingKeydataHash: string };
+type SecureChipModel = 'ATECC' | 'Optiga';
 type BtcSimpleType = 'p2wpkhP2sh' | 'p2wpkh' | 'p2tr';
 type KeyOriginInfo = {
   rootFingerprint?: string;
@@ -182,6 +195,14 @@ extern "C" {
     pub type TsKeypath;
     #[wasm_bindgen(typescript_type = "DeviceInfo")]
     pub type TsDeviceInfo;
+    #[wasm_bindgen(typescript_type = "AttestationResult")]
+    pub type TsAttestationResult;
+    #[wasm_bindgen(typescript_type = "BootloaderVersions")]
+    pub type TsBootloaderVersions;
+    #[wasm_bindgen(typescript_type = "BootloaderHashes")]
+    pub type TsBootloaderHashes;
+    #[wasm_bindgen(typescript_type = "SecureChipModel")]
+    pub type TsSecureChipModel;
     #[wasm_bindgen(typescript_type = "BtcRegisterXPubType")]
     pub type TsBtcRegisterXPubType;
     #[wasm_bindgen(typescript_type = "BtcSimpleType")]

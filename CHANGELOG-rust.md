@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+- Add `bootloader` module: `Bootloader`, `BootloaderProduct`, `SignedFirmware` — the bootloader
+  protocol (command byte 0xC3) for flashing signed firmware releases.
+- Add `attestation` module and `BitBox::perform_attestation()`: genuine-device check against the
+  vendor's root attestation pubkeys (ported from bitbox02-api-go).
+- Add `Error::Bootloader` and `Error::Attestation`.
 
 ## 0.13.1
 - Restrict persisted Noise config files to private permissions on Unix.
