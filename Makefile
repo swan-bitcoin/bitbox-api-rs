@@ -25,6 +25,9 @@ example-cardano:
 example-simulator:
 	cargo run --example simulator --features=simulator,tokio/rt,tokio/macros,tokio/rt-multi-thread,multithreaded
 wasm:
+	test "$$(wasm-pack --version)" = "wasm-pack 0.13.1"
+	git diff --exit-code HEAD
+	rm -rf pkg
 	wasm-pack build --release --features=wasm -- --locked
 	cp webhid.js pkg/
 	jq '.files += ["webhid.js"]' pkg/package.json > tmp.json && mv tmp.json pkg/package.json
